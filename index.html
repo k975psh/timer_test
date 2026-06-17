@@ -178,6 +178,36 @@
             from { transform: scale(0.8); opacity: 0; }
             to { transform: scale(1); opacity: 1; }
         }
+
+        /* 5분 경과 알림 시각 효과 */
+        .flash-glow {
+            animation: flash 1s ease-in-out;
+        }
+        @keyframes flash {
+            0%, 100% { box-shadow: 0 0 30px rgba(99, 102, 241, 0.4); transform: scale(1); }
+            50% { box-shadow: 0 0 80px rgba(253, 224, 71, 1); transform: scale(1.05); }
+        }
+        
+        /* 5분 경과 시 나타나는 응원 메시지 */
+        .interval-msg {
+            position: absolute;
+            top: -90px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #fde047;
+            font-size: 1.5rem;
+            font-weight: bold;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            opacity: 0;
+            z-index: 40;
+            pointer-events: none;
+            transition: opacity 0.3s, top 0.3s;
+            white-space: nowrap;
+        }
+        .interval-msg.show {
+            opacity: 1;
+            top: -110px;
+        }
     </style>
 </head>
 <body class="mode-study">
@@ -203,6 +233,9 @@
 
         <!-- 타이머 (시계) 영역 -->
         <div class="relative mb-10">
+            <!-- 5분 알림 팝업 메시지 -->
+            <div id="interval-msg" class="interval-msg">✨ 5분 달성! 파이팅! ✨</div>
+
             <!-- 시계 위에 올라간 캐릭터 아이콘 -->
             <div id="character" class="character bounce" style="left: 50%; transform: translateX(-50%);">👨‍🚀</div>
 
@@ -309,6 +342,10 @@
         const modalDesc = document.getElementById('modal-desc');
         const modalReward = document.getElementById('modal-reward');
 
+        // 알림 효과를 위한 요소들
+        const intervalMsg = document.getElementById('interval-msg');
+        const timerDisplayContainer = document.getElementById('timer-display-container');
+
         // 새로 추가된 시간 설정 관련 요소들
         const timeControls = document.getElementById('time-controls');
         const decreaseTimeBtn = document.getElementById('decrease-time-btn');
@@ -332,6 +369,65 @@
         let badges = []; // 모은 보상 아이콘을 저장하는 리스트
 
         const rewards = ['⭐', '🪐', '🚀', '👽', '☄️', '🌙', '🌟', '💎']; // 보상으로 줄 이모지들
+
+        // --- 사운드 효과 함수 (Web Audio API 사용) ---
+        // 별도의 오디오 파일 없이 브라우저에서 직접 소리를 만들어냅니다.
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        let audioCtx;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new AudioContext();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        // 5분마다 울리는 알림 소리 (띠링! 소리가 3초 동안 3번 울리도록 수정)
+        function playIntervalSound() {
+            if(!audioCtx) return;
+            
+            // 3초 동안 1초 간격으로 3번 소리를 냅니다.
+            for (let i = 0; i < 3; i++) {
+                const startTime = audioCtx.currentTime + i;
+                const osc = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                
+                osc.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                
+                osc.type = 'sine'; // 부드럽고 맑은 소리
+                osc.frequency.setValueAtTime(880, startTime); // 높은 도(A5) 근처
+                osc.frequency.exponentialRampToValueAtTime(1760, startTime + 0.1); 
+                
+                gainNode.gain.setValueAtTime(0.3, startTime);
+                // 소리의 여운이 0.8초 동안 천천히 사라지게 합니다.
+                gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + 0.8);
+                
+                osc.start(startTime);
+                osc.stop(startTime + 0.8);
+            }
+        }
+
+        // 타이머 완료 소리 (빰-빰-빠밤~)
+        function playCompleteSound() {
+            if(!audioCtx) return;
+            const notes = [523.25, 659.25, 783.99, 1046.50]; // 도, 미, 솔, 높은도
+            notes.forEach((freq, i) => {
+                const osc = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                osc.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                osc.type = 'triangle'; // 전자오락 같은 통통 튀는 소리
+                osc.frequency.value = freq;
+                const startTime = audioCtx.currentTime + (i * 0.15);
+                gainNode.gain.setValueAtTime(0.4, startTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + 0.3);
+                osc.start(startTime);
+                osc.stop(startTime + 0.3);
+            });
+        }
 
         // --- 핵심 기능 1: 시계와 남은 시간을 화면에 업데이트하는 함수 ---
         function updateDisplay() {
@@ -392,6 +488,8 @@
             if (isRunning) return; // 이미 실행 중이면 무시
             isRunning = true;
             
+            initAudio(); // 버튼을 눌렀을 때 오디오 시스템을 깨워줍니다.
+
             startBtn.classList.add('hidden'); // 시작 버튼 숨기기
             pauseBtn.classList.remove('hidden'); // 일시정지 버튼 보이기
             
@@ -412,6 +510,23 @@
                 if (timeLeft > 0) {
                     timeLeft--; // 시간을 1초 줄임
                     updateDisplay(); // 줄어든 시간으로 시계 업데이트
+                    
+                    // --- 5분 경과 알림 로직 (시각 + 청각) ---
+                    // 남은 시간이 5분(300초) 단위로 나누어 떨어질 때 발동
+                    if (timeLeft > 0 && timeLeft % 300 === 0 && timeLeft !== totalTime) {
+                        playIntervalSound(); // '띠링!' 소리 재생
+                        
+                        // 캐릭터 머리 위에 메시지를 띄우고, 시계 테두리가 반짝거림
+                        intervalMsg.classList.add('show');
+                        timerDisplayContainer.classList.add('flash-glow');
+                        
+                        // 3초 뒤에 시각 효과 다시 숨기기
+                        setTimeout(() => {
+                            intervalMsg.classList.remove('show');
+                            timerDisplayContainer.classList.remove('flash-glow');
+                        }, 3000);
+                    }
+
                 } else {
                     completeTimer(); // 시간이 다 되면 타이머 완료 함수 실행
                 }
@@ -455,12 +570,16 @@
                 badges.push(randomReward);
                 updateBadges(); // 화면에 보상을 추가해 그립니다.
                 
+                playCompleteSound(); // 탐험 완료 빰빠밤 사운드!
+                
                 modalTitle.textContent = "탐험 대성공!";
                 modalDesc.textContent = "멋지게 집중했어요! 우주 보물을 찾았습니다!";
                 modalReward.textContent = randomReward;
                 modal.style.display = 'flex'; // 축하 팝업 띄우기
                 
             } else {
+                playCompleteSound(); // 휴식 완료 빰빠밤 사운드!
+                
                 modalTitle.textContent = "휴식 끝!";
                 modalDesc.textContent = "에너지를 모두 채웠어요. 다시 탐험을 떠나볼까요?";
                 modalReward.textContent = "🔋";
